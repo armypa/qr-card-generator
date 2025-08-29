@@ -19,9 +19,12 @@
     window.addEventListener("DOMContentLoaded", () => {
       QRCard.mount("#mount-here", { apiBase: "http://localhost:3000", brandName: "Your Brand" });
     });
-  </script>
-  -->
+    
+<!-- Load the QR library explicitly -->
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
 
-  <script src="../frontend/qr-card-widget.js"></script>
+<!-- Then load the widget -->
+<script src="../frontend/qr-card-widget.js"></script>
+
 </body>
 </html>
