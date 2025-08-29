@@ -177,7 +177,13 @@ app.get('/api/admin/contacts', (req, res) => {
   const rows = db.prepare(`SELECT id, firstName, lastName, email, mobile, website, createdAt FROM contacts ORDER BY id DESC LIMIT 100`).all();
   return res.json({ contacts: rows });
 });
-
+// simple health checks (add above app.listen)
+app.get('/', (req, res) => {
+  res.type('text/plain').send('Server up. Try /health and /api/admin/contacts');
+});
+app.get('/health', (req, res) => {
+  res.type('text/plain').send('OK ' + new Date().toISOString());
+});
 app.listen(PORT, () => {
   console.log(`QR Card backend running on http://localhost:${PORT}`);
 });
