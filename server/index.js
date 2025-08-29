@@ -1,4 +1,4 @@
-
+// server/index.js
 import express from 'express';
 import cors from 'cors';
 import Database from 'better-sqlite3';
@@ -8,10 +8,26 @@ const nanoid = customAlphabet('abcdefghijklmnopqrstuvwxyz0123456789', 8);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const ORIGIN = process.env.CORS_ORIGIN || '*'; // set to your site origin in prod
+// Bind to 0.0.0.0 so Codespaces' port forwarder can reach it
+const HOST = '0.0.0.0';
 
-app.use(cors({ origin: ORIGIN }));
+// Permissive CORS for the demo; tighten in prod
+app.use(cors({ origin: true }));
 app.use(express.json({ limit: '1mb' }));
+
+// Simple request log so we see traffic in the terminal
+app.use((req, _res, next) => {
+  console.log(new Date().toISOString(), req.method, req.url);
+  next();
+});
+
+// --- Health routes (for quick tests from Safari) ---
+app.get('/', (_req, res) => {
+  res.type('text/plain').send('Server up. Try /health and /api/admin/contacts');
+});
+app.get('/health', (_req, res) => {
+  res.type('text/plain').send('OK ' + new Date().toISOString());
+});
 
 // --- DB setup ---
 const db = new Database('./qr_cards.sqlite');
@@ -46,12 +62,11 @@ CREATE TABLE IF NOT EXISTS consents (
 );
 `);
 
-// --- Helpers ---
+// Helpers
 function sanitizeUrl(u) {
   if (!u) return '';
   try { const url = new URL(u); return url.toString(); } catch { return ''; }
 }
-
 function buildVCard(contact){
   const esc = (s)=> (s||'').replace(/\\/g,'\\\\').replace(/\n/g,'\\n').replace(/,/g,'\\,').replace(/;/g,'\\;');
   const adr = contact.address || {};
@@ -75,41 +90,41 @@ function buildVCard(contact){
   return lines.join('\r\n');
 }
 
-// --- Routes ---
-
-// Create contact + profile (basic validation)
+// --- API routes ---
 app.post('/api/qr-cards', (req, res) => {
   try {
-    const { contact, consent, qr } = req.body || {};
+    const { contact, consent } = req.body || {};
     if (!contact?.firstName || !contact?.lastName || !contact?.email || !contact?.mobile) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
-    // Normalize a few fields
     contact.website = sanitizeUrl(contact.website);
     const socials = contact.socials || {};
     Object.keys(socials).forEach(k => socials[k] = sanitizeUrl(socials[k]));
 
-    // Insert contact
-    const stmt = db.prepare(`INSERT INTO contacts 
+    const info = db.prepare(`INSERT INTO contacts 
       (firstName, lastName, title, company, email, mobile, workPhone, website, socials_json, address_json, notes)
-      VALUES (@firstName, @lastName, @title, @company, @email, @mobile, @workPhone, @website, @socials_json, @address_json, @notes)`);
-    const info = stmt.run({
-      firstName: contact.firstName, lastName: contact.lastName, title: contact.title || '', company: contact.company || '',
-      email: contact.email, mobile: contact.mobile, workPhone: contact.workPhone || '', website: contact.website || '',
-      socials_json: JSON.stringify(socials),
-      address_json: JSON.stringify(contact.address || {}),
-      notes: contact.notes || ''
-    });
+      VALUES (@firstName, @lastName, @title, @company, @email, @mobile, @workPhone, @website, @socials_json, @address_json, @notes)`)
+      .run({
+        firstName: contact.firstName,
+        lastName: contact.lastName,
+        title: contact.title || '',
+        company: contact.company || '',
+        email: contact.email,
+        mobile: contact.mobile,
+        workPhone: contact.workPhone || '',
+        website: contact.website || '',
+        socials_json: JSON.stringify(socials),
+        address_json: JSON.stringify(contact.address || {}),
+        notes: contact.notes || ''
+      });
     const contactId = info.lastInsertRowid;
 
-    // Profile slug
     const slug = nanoid();
     db.prepare(`INSERT INTO profiles (contactId, slug) VALUES (?, ?)`).run(contactId, slug);
 
-    // Consent record
-    const cText = consent?.text || 'consent';
-    db.prepare(`INSERT INTO consents (contactId, consentText, consentVersion, ipAddress, userAgent) VALUES (?, ?, ?, ?, ?)`)
-      .run(contactId, cText, 'v1', req.ip, req.get('User-Agent') || '');
+    db.prepare(`INSERT INTO consents (contactId, consentText, consentVersion, ipAddress, userAgent)
+      VALUES (?, ?, ?, ?, ?)`)
+      .run(contactId, consent?.text || 'consent', 'v1', req.ip, req.get('User-Agent') || '');
 
     return res.json({ contactId, profileUrl: `/c/${slug}` });
   } catch (e) {
@@ -118,44 +133,12 @@ app.post('/api/qr-cards', (req, res) => {
   }
 });
 
-// Serve a simple public profile with vCard download
-app.get('/c/:slug', (req, res) => {
-  const slug = req.params.slug;
-  const row = db.prepare(`SELECT c.*, p.id as pid FROM profiles p JOIN contacts c ON c.id = p.contactId WHERE p.slug = ? AND p.isPublic = 1`).get(slug);
-  if (!row) return res.status(404).send('Not found');
-  db.prepare(`UPDATE profiles SET viewCount = viewCount + 1, updatedAt = datetime('now') WHERE id = ?`).run(row.pid);
-
-  const contact = {
-    firstName: row.firstName, lastName: row.lastName, title: row.title, company: row.company,
-    email: row.email, mobile: row.mobile, workPhone: row.workPhone, website: row.website,
-    socials: JSON.parse(row.socials_json || '{}'), address: JSON.parse(row.address_json || '{}'),
-    notes: row.notes
-  };
-  const vcfUrl = `/api/contacts/${row.id}.vcf`;
-  const html = `<!doctype html>
-  <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>${contact.firstName} ${contact.lastName} • Card</title>
-  <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 2rem; color:#111827;}
-    .card { max-width: 640px; border:1px solid #e5e7eb; padding: 16px; border-radius: 12px; }
-    h1 { margin: 0 0 4px 0; }
-    .muted { color:#6b7280; }
-    a.btn { display:inline-block; padding:10px 14px; background:#0F766E; color:#fff; border-radius:8px; text-decoration:none; font-weight:600; }
-  </style>
-  </head><body>
-  <div class="card">
-    <h1>${contact.firstName} ${contact.lastName}</h1>
-    <div class="muted">${contact.title || ''} ${contact.company ? ' • ' + contact.company : ''}</div>
-    <p>Email: <a href="mailto:${contact.email}">${contact.email}</a><br>
-    Mobile: ${contact.mobile}${contact.website ? `<br>Website: <a href="${contact.website}" target="_blank" rel="noopener">${contact.website}</a>` : ''}</p>
-    <p><a class="btn" href="${vcfUrl}">Download vCard (.vcf)</a></p>
-  </div>
-  </body></html>`;
-  res.setHeader('Content-Type', 'text/html; charset=utf-8');
-  return res.send(html);
+app.get('/api/admin/contacts', (_req, res) => {
+  const rows = db.prepare(`SELECT id, firstName, lastName, email, mobile, website, createdAt
+                           FROM contacts ORDER BY id DESC LIMIT 100`).all();
+  return res.json({ contacts: rows });
 });
 
-// Serve a .vcf for a contact ID
 app.get('/api/contacts/:id.vcf', (req, res) => {
   const id = Number(req.params.id || 0);
   const row = db.prepare(`SELECT * FROM contacts WHERE id = ?`).get(id);
@@ -172,18 +155,31 @@ app.get('/api/contacts/:id.vcf', (req, res) => {
   return res.send(vcf);
 });
 
-// Minimal admin list (no auth in demo; add auth in production)
-app.get('/api/admin/contacts', (req, res) => {
-  const rows = db.prepare(`SELECT id, firstName, lastName, email, mobile, website, createdAt FROM contacts ORDER BY id DESC LIMIT 100`).all();
-  return res.json({ contacts: rows });
+app.get('/c/:slug', (req, res) => {
+  const slug = req.params.slug;
+  const row = db.prepare(`
+    SELECT c.*, p.id as pid FROM profiles p
+    JOIN contacts c ON c.id = p.contactId
+    WHERE p.slug = ? AND p.isPublic = 1
+  `).get(slug);
+  if (!row) return res.status(404).send('Not found');
+  db.prepare(`UPDATE profiles SET viewCount = viewCount + 1, updatedAt = datetime('now') WHERE id = ?`)
+    .run(row.pid);
+
+  const html = `<!doctype html><meta charset="utf-8">
+    <title>${row.firstName} ${row.lastName} • Card</title>
+    <style>body{font-family:system-ui, -apple-system, Segoe UI, Roboto, Arial; margin:2rem; color:#111827}
+    .card{max-width:640px;border:1px solid #e5e7eb;padding:16px;border-radius:12px}</style>
+    <div class="card">
+      <h1>${row.firstName} ${row.lastName}</h1>
+      <div>${row.title || ''} ${row.company ? ' • ' + row.company : ''}</div>
+      <p>Email: <a href="mailto:${row.email}">${row.email}</a><br>Mobile: ${row.mobile}</p>
+      <p><a href="/api/contacts/${row.id}.vcf">Download vCard (.vcf)</a></p>
+    </div>`;
+  res.type('html').send(html);
 });
-// simple health checks (add above app.listen)
-app.get('/', (req, res) => {
-  res.type('text/plain').send('Server up. Try /health and /api/admin/contacts');
-});
-app.get('/health', (req, res) => {
-  res.type('text/plain').send('OK ' + new Date().toISOString());
-});
-app.listen(PORT, () => {
-  console.log(`QR Card backend running on http://localhost:${PORT}`);
+
+app.listen(PORT, HOST, () => {
+  console.log(`QR Card backend running on http://${HOST}:${PORT}`);
+  console.log(`Remember: set Codespaces port 3000 to Public in the Ports tab.`);
 });
