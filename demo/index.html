@@ -23,6 +23,17 @@
 <!-- Load the QR library explicitly -->
 <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
 <!-- Then load the widget -->
-<script src="../frontend/qr-card-widget.js"></script>
+<!-- put this right before </body> (or in <head>) -->
+<script>
+(function(){
+  function load(src){return new Promise(function(res, rej){
+    var s=document.createElement('script'); s.src=src; s.onload=res; s.onerror=rej; document.head.appendChild(s);
+  });}
+  load("https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js")
+  .catch(()=>load("https://unpkg.com/qrcode@1.5.3/build/qrcode.min.js"))
+  .then(()=>load("../frontend/qr-card-widget.js"))
+  .catch(function(e){ alert("QR library failed to load: " + e); });
+})();
+</script>
 </body>
 </html>
